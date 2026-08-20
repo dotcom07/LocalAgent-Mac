@@ -1,0 +1,513 @@
+#!/bin/zsh
+
+set -eu
+setopt extended_glob
+
+readonly SCRIPT_DIR=${0:A:h}
+readonly CONFIG_FILE=${LOCAL_AGENT_CONFIG:-$SCRIPT_DIR/local-agent.env}
+readonly OMLX_HOME=$HOME/.omlx
+readonly ENDPOINT=http://127.0.0.1:8000
+readonly MAX_OUTPUT_TOKENS=8192
+readonly HOT_CACHE_SIZE=1GB
+
+die() {
+  print -u2 -- "error: $*"
+  exit 1
+}
+
+usage() {
+  print -- "Usage: ./local-agent <command>"
+  print -- ""
+  print -- "  check-config    Validate local-agent.env"
+  print -- "  doctor          Read-only hardware and dependency checks"
+  print -- "  install         Install stable oMLX and Pi"
+  print -- "  configure       Write the 24GB-safe oMLX profile"
+  print -- "  start           Start oMLX and wait until ready"
+  print -- "  download-model  Open oMLX's native model downloader"
+  print -- "  status          Show service and model status"
+  print -- "  verify          Test text, thinking, tool calls, and prefix cache"
+  print -- "  bench           Measure cold/warm cache and memory at configured context"
+  print -- "  pi [args...]     Configure and launch Pi through oMLX"
+  print -- "  stop            Stop oMLX"
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "$1 is required"
+}
+
+load_config() {
+  MODEL_ID=fcmeyer/Qwen3.8-27B-MLX-oQ4e-mtp
+  CONTEXT_TOKENS=16384
+  MEMORY_LIMIT_GB=20
+  REASONING_EFFORT=medium
+
+  if [[ -f $CONFIG_FILE ]]; then
+    local line key value
+    while IFS= read -r line || [[ -n $line ]]; do
+      line=${line%$'\r'}
+      [[ -z $line || $line == \#* ]] && continue
+      [[ $line == *=* ]] || die "invalid config line: $line"
+      key=${line%%=*}
+      value=${line#*=}
+      [[ -n $value ]] || die "$key cannot be empty"
+      case $key in
+        MODEL_ID) MODEL_ID=$value ;;
+        CONTEXT_TOKENS) CONTEXT_TOKENS=$value ;;
+        MEMORY_LIMIT_GB) MEMORY_LIMIT_GB=$value ;;
+        REASONING_EFFORT) REASONING_EFFORT=$value ;;
+        *) die "unsupported config key: $key" ;;
+      esac
+    done < "$CONFIG_FILE"
+  fi
+
+  case $MODEL_ID in
+    fcmeyer/Qwen3.8-27B-MLX-oQ4e-mtp|scottlowry/Qwen3.8-27B-oQ4e-mtp) ;;
+    *) die "MODEL_ID must be one of the two verified Qwen3.8 oQ4e-MTP checkpoints" ;;
+  esac
+  case $CONTEXT_TOKENS in
+    16384|24576|32768) ;;
+    *) die "CONTEXT_TOKENS must be 16384, 24576, or 32768" ;;
+  esac
+  [[ $MEMORY_LIMIT_GB == <-> ]] || die "MEMORY_LIMIT_GB must be an integer"
+  (( MEMORY_LIMIT_GB >= 18 && MEMORY_LIMIT_GB <= 20 )) ||
+    die "MEMORY_LIMIT_GB must be between 18 and 20 on a 24GB Mac"
+  case $REASONING_EFFORT in
+    low|medium|xhigh) ;;
+    *) die "REASONING_EFFORT must be low, medium, or xhigh" ;;
+  esac
+
+  MODEL_NAME=${MODEL_ID:t}
+}
+
+check_config() {
+  load_config
+  print -- "config: ok"
+  print -- "model: $MODEL_ID"
+  print -- "context: $CONTEXT_TOKENS"
+  print -- "memory limit: ${MEMORY_LIMIT_GB}GB"
+  print -- "reasoning effort: $REASONING_EFFORT"
+}
+
+is_prerelease() {
+  [[ ${1:l} == *rc* || ${1:l} == *dev* || ${1:l} == *alpha* || ${1:l} == *beta* ]]
+}
+
+version_is_supported() {
+  local version=${1#v}
+  local -a parts
+  parts=("${(@s:.:)version}")
+  (( ${#parts} == 3 )) || return 1
+  [[ $parts[1] == <-> && $parts[2] == <-> && $parts[3] == <-> ]] || return 1
+  (( parts[1] > 0 || parts[2] > 6 || (parts[2] == 6 && parts[3] >= 2) ))
+}
+
+require_stable_omlx() {
+  require_command omlx
+  local version
+  version=$(omlx --version 2>/dev/null) || die "cannot read oMLX version"
+  is_prerelease "$version" && die "oMLX $version is not a stable release"
+  version_is_supported "$version" || die "oMLX >=0.6.2 is required; found $version"
+}
+
+node_is_supported() {
+  command -v node >/dev/null 2>&1 || return 1
+  local version major minor rest
+  version=$(node -p 'process.versions.node') || return 1
+  major=${version%%.*}
+  rest=${version#*.}
+  minor=${rest%%.*}
+  (( major > 22 || (major == 22 && minor >= 19) ))
+}
+
+server_is_ready() {
+  curl -fsS --max-time 2 "$ENDPOINT/health" >/dev/null 2>&1
+}
+
+api_curl() {
+  local api_key=''
+  if [[ -f $OMLX_HOME/settings.json ]] && command -v jq >/dev/null 2>&1; then
+    api_key=$(jq -r '.auth.api_key // empty' "$OMLX_HOME/settings.json")
+  fi
+  if [[ -n $api_key ]]; then
+    curl -H "Authorization: Bearer $api_key" "$@"
+  else
+    curl "$@"
+  fi
+}
+
+doctor() {
+  load_config
+  local failed=0
+
+  if [[ $(uname -s) == Darwin && $(uname -m) == arm64 ]]; then
+    print -- "[ok] Apple Silicon macOS"
+  else
+    print -- "[fail] requires Apple Silicon macOS"
+    failed=1
+  fi
+
+  local macos_version macos_major
+  if command -v sw_vers >/dev/null 2>&1; then
+    macos_version=$(sw_vers -productVersion)
+    macos_major=${macos_version%%.*}
+    if (( macos_major >= 15 )); then
+      print -- "[ok] macOS $macos_version"
+    else
+      print -- "[fail] oMLX requires macOS 15 or newer"
+      failed=1
+    fi
+  fi
+
+  local memory_bytes memory_gb
+  if memory_bytes=$(sysctl -n hw.memsize 2>/dev/null); then
+    memory_gb=$((memory_bytes / 1024 / 1024 / 1024))
+    if (( memory_bytes >= 24 * 1024 * 1024 * 1024 )); then
+      print -- "[ok] unified memory: ${memory_gb}GB"
+    else
+      print -- "[fail] requires at least 24GB unified memory"
+      failed=1
+    fi
+  else
+    print -- "[fail] cannot read unified memory size"
+    failed=1
+  fi
+
+  local free_kb free_gb
+  free_kb=$(df -Pk "$HOME" | awk 'NR == 2 { print $4 }')
+  free_gb=$((free_kb / 1024 / 1024))
+  if (( free_gb >= 40 )); then
+    print -- "[ok] free disk: ${free_gb}GB"
+  else
+    print -- "[warn] free disk: ${free_gb}GB; model + cache needs about 40GB"
+  fi
+
+  if command -v brew >/dev/null 2>&1; then
+    print -- "[ok] Homebrew"
+  else
+    print -- "[fail] Homebrew is required"
+    failed=1
+  fi
+
+  if node_is_supported; then
+    print -- "[ok] Node $(node --version)"
+  elif command -v node >/dev/null 2>&1; then
+    print -- "[warn] Node $(node --version); Pi requires >=22.19"
+  else
+    print -- "[info] Node will be installed by ./local-agent install"
+  fi
+
+  if command -v omlx >/dev/null 2>&1; then
+    local omlx_version
+    omlx_version=$(omlx --version 2>/dev/null || print unknown)
+    if is_prerelease "$omlx_version" || ! version_is_supported "$omlx_version"; then
+      print -- "[fail] oMLX $omlx_version; stable >=0.6.2 is required"
+      failed=1
+    else
+      print -- "[ok] oMLX $omlx_version"
+    fi
+  else
+    print -- "[info] oMLX not installed"
+  fi
+
+  if command -v pi >/dev/null 2>&1; then
+    print -- "[ok] Pi installed"
+  else
+    print -- "[info] Pi not installed"
+  fi
+
+  if server_is_ready; then
+    print -- "[ok] oMLX ready at $ENDPOINT"
+  elif command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:8000 -sTCP:LISTEN >/dev/null 2>&1; then
+    print -- "[fail] port 8000 is used by another service"
+    failed=1
+  else
+    print -- "[info] port 8000 available"
+  fi
+
+  return $failed
+}
+
+install_tools() {
+  require_command brew
+
+  if ! command -v jq >/dev/null 2>&1; then
+    brew install jq
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    brew install node
+  fi
+  node_is_supported || die "Pi requires Node >=22.19"
+  require_command npm
+
+  if ! command -v omlx >/dev/null 2>&1; then
+    brew tap jundot/omlx https://github.com/jundot/omlx
+    local formula_version
+    formula_version=$(brew info --json=v2 jundot/omlx/omlx | jq -r '.formulae[0].versions.stable')
+    [[ -n $formula_version && $formula_version != null ]] || die "cannot determine oMLX formula version"
+    is_prerelease "$formula_version" &&
+      die "official tap currently points to prerelease $formula_version; wait for the final stable release"
+    version_is_supported "$formula_version" || die "oMLX formula >=0.6.2 is required"
+    brew install jundot/omlx/omlx
+  fi
+  require_stable_omlx
+
+  if ! command -v pi >/dev/null 2>&1; then
+    npm install -g @earendil-works/pi-coding-agent
+  fi
+
+  print -- "installed: oMLX $(omlx --version), Pi"
+}
+
+read_json_or_empty() {
+  if [[ -f $1 ]]; then
+    jq empty "$1" >/dev/null 2>&1 || die "invalid JSON: $1"
+    command cat "$1"
+  else
+    print -- '{}'
+  fi
+}
+
+backup_once() {
+  local file=$1 backup=${1}.local-agent.bak
+  if [[ -f $file && ! -f $backup ]]; then
+    cp -p "$file" "$backup"
+    print -- "backup: $backup"
+  fi
+}
+
+configure_omlx() {
+  load_config
+  require_stable_omlx
+  require_command jq
+
+  if ! omlx stop --timeout 60 >/dev/null 2>&1; then
+    if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:8000 -sTCP:LISTEN >/dev/null 2>&1; then
+      die "could not stop the service using port 8000"
+    fi
+  fi
+
+  mkdir -p "$OMLX_HOME"
+  local global_file=$OMLX_HOME/settings.json
+  local model_file=$OMLX_HOME/model_settings.json
+  backup_once "$global_file"
+  backup_once "$model_file"
+
+  local tmp
+  tmp=$(mktemp "$OMLX_HOME/.settings.json.XXXXXX")
+  if ! read_json_or_empty "$global_file" | jq \
+    --argjson memory "$MEMORY_LIMIT_GB" \
+    --argjson context "$CONTEXT_TOKENS" \
+    --argjson output "$MAX_OUTPUT_TOKENS" \
+    --arg model "$MODEL_NAME" \
+    --arg hot "$HOT_CACHE_SIZE" '
+      .version = (.version // "1.0")
+      | .server = ((.server // {}) + {host: "127.0.0.1", port: 8000})
+      | .memory = ((.memory // {}) + {
+          prefill_memory_guard: true,
+          memory_guard_tier: "custom",
+          memory_guard_custom_ceiling_gb: $memory
+        })
+      | .scheduler = ((.scheduler // {}) + {max_concurrent_requests: 1})
+      | .cache = ((.cache // {}) + {
+          enabled: true,
+          hot_cache_only: false,
+          hot_cache_max_size: $hot
+        })
+      | .sampling = ((.sampling // {}) + {
+          max_context_window: $context,
+          max_context_window_policy: $context,
+          max_tokens: $output,
+          temperature: 1.0,
+          top_p: 0.95,
+          top_k: 20,
+          repetition_penalty: 1.0
+        })
+      | .integrations = ((.integrations // {}) + {pi_model: $model})
+    ' > "$tmp"; then
+    rm -f "$tmp"
+    die "failed to update $global_file"
+  fi
+  chmod 600 "$tmp"
+  mv "$tmp" "$global_file"
+
+  tmp=$(mktemp "$OMLX_HOME/.model_settings.json.XXXXXX")
+  if ! read_json_or_empty "$model_file" | jq \
+    --arg model "$MODEL_NAME" \
+    --arg effort "$REASONING_EFFORT" \
+    --argjson context "$CONTEXT_TOKENS" \
+    --argjson output "$MAX_OUTPUT_TOKENS" '
+      .version = 1
+      | .models = (.models // {})
+      | .models |= with_entries(
+          if .key == $model then .
+          else .value = ((.value // {}) + {is_pinned: false, is_default: false})
+          end
+        )
+      | .models[$model] = ((.models[$model] // {}) + {
+          max_context_window: $context,
+          max_tokens: $output,
+          temperature: 1.0,
+          top_p: 0.95,
+          top_k: 20,
+          min_p: 0.0,
+          presence_penalty: 0.0,
+          repetition_penalty: 1.0,
+          enable_thinking: true,
+          mtp_enabled: true,
+          turboquant_kv_enabled: false,
+          vlm_mtp_enabled: false,
+          dflash_enabled: false,
+          specprefill_enabled: false,
+          qwen35_ane_prefill_enabled: false,
+          is_pinned: true,
+          is_default: true,
+          trust_remote_code: false
+        })
+      | .models[$model].chat_template_kwargs = (
+          (.models[$model].chat_template_kwargs // {}) + {reasoning_effort: $effort}
+        )
+    ' > "$tmp"; then
+    rm -f "$tmp"
+    die "failed to update $model_file"
+  fi
+  chmod 600 "$tmp"
+  mv "$tmp" "$model_file"
+
+  print -- "configured: $MODEL_NAME"
+  print -- "context=${CONTEXT_TOKENS}, output=${MAX_OUTPUT_TOKENS}, memory=${MEMORY_LIMIT_GB}GB"
+  print -- "MTP=on, TurboQuant=off, SSD cache=on, hot cache=$HOT_CACHE_SIZE"
+}
+
+wait_ready() {
+  local timeout=${1:-300}
+  local deadline=$((SECONDS + timeout))
+  until server_is_ready; do
+    (( SECONDS >= deadline )) && return 1
+    sleep 2
+  done
+}
+
+start_server() {
+  load_config
+  require_stable_omlx
+  require_command curl
+  if server_is_ready; then
+    print -- "oMLX already ready at $ENDPOINT"
+    return
+  fi
+  omlx start --no-wait
+  wait_ready 300 || die "oMLX did not become ready; see $OMLX_HOME/logs/server.log"
+  print -- "oMLX ready at $ENDPOINT"
+}
+
+download_model() {
+  load_config
+  start_server
+  require_command jq
+
+  if api_curl -fsS "$ENDPOINT/v1/models" | jq -e --arg model "$MODEL_NAME" \
+      '.data[]? | select(.id == $model)' >/dev/null; then
+    print -- "model already available: $MODEL_NAME"
+    return
+  fi
+
+  print -- "oMLX Admin > Models > Download에서 아래 ID를 붙여 넣으세요:"
+  print -- "$MODEL_ID"
+  print -- "download size: 16.99GB"
+  if command -v open >/dev/null 2>&1; then
+    open "$ENDPOINT/admin"
+  else
+    print -- "$ENDPOINT/admin"
+  fi
+}
+
+status() {
+  if command -v omlx >/dev/null 2>&1; then
+    print -- "oMLX: $(omlx --version 2>/dev/null || print installed)"
+  else
+    print -- "oMLX: not installed"
+  fi
+  if server_is_ready; then
+    print -- "server: ready ($ENDPOINT)"
+    if command -v jq >/dev/null 2>&1; then
+      api_curl -fsS "$ENDPOINT/v1/models" |
+        jq -r '.data[]?.id | "model: " + .' || true
+    fi
+  else
+    print -- "server: stopped or not ready"
+  fi
+}
+
+require_model_ready() {
+  load_config
+  require_command jq
+  start_server
+  api_curl -fsS "$ENDPOINT/v1/models" | jq -e --arg model "$MODEL_NAME" \
+    '.data[]? | select(.id == $model)' >/dev/null ||
+    die "model not available: run ./local-agent download-model first"
+}
+
+run_measure() {
+  local mode=$1
+  node_is_supported || die "Node >=22.19 is required"
+  require_model_ready
+
+  mkdir -p "$SCRIPT_DIR/results"
+  local result_dir
+  result_dir=$(mktemp -d "$SCRIPT_DIR/results/$(date +%Y%m%d-%H%M%S)-$mode.XXXXXX")
+  local result_file=$result_dir/summary.json
+
+  local exit_code=0
+  local api_key=''
+  [[ -f $OMLX_HOME/settings.json ]] && api_key=$(jq -r '.auth.api_key // empty' "$OMLX_HOME/settings.json")
+  OMLX_API_KEY=$api_key node "$SCRIPT_DIR/measure.mjs" "--$mode" \
+    --endpoint "$ENDPOINT" \
+    --model "$MODEL_NAME" \
+    --context "$CONTEXT_TOKENS" \
+    --reasoning-effort "$REASONING_EFFORT" \
+    --output-json "$result_file" >/dev/null || exit_code=$?
+
+  if [[ -f $result_file ]]; then
+    if [[ $mode == verify ]]; then
+      jq '{passed, model, text: .text.has_text, reasoning: .reasoning.has_reasoning, tool_call: .tool.has_tool_calls, cached_tokens: .cache.warm.cached_prompt_tokens}' "$result_file"
+    else
+      jq '{passed, model, context, prompt_tokens: .calibration.prompt_tokens, medians, peak_omlx_rss_bytes: .memory.peak_omlx_rss_bytes}' "$result_file"
+    fi
+    print -- "saved: $result_file"
+  fi
+  (( exit_code == 0 )) || die "$mode failed"
+}
+
+launch_pi() {
+  require_command omlx
+  require_command pi
+  require_model_ready
+  exec omlx launch pi --model "$MODEL_NAME" -- "$@"
+}
+
+stop_server() {
+  require_command omlx
+  omlx stop --timeout 60
+}
+
+main() {
+  local command=${1:-help}
+  (( $# > 0 )) && shift
+  case $command in
+    help|-h|--help) usage ;;
+    check-config) check_config ;;
+    doctor) doctor ;;
+    install) install_tools ;;
+    configure) configure_omlx ;;
+    start) start_server ;;
+    download-model) download_model ;;
+    status) status ;;
+    verify) run_measure verify ;;
+    bench) run_measure bench ;;
+    pi) launch_pi "$@" ;;
+    stop) stop_server ;;
+    *) usage >&2; die "unknown command: $command" ;;
+  esac
+}
+
+main "$@"
