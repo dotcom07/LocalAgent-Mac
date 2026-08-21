@@ -78,10 +78,10 @@ cp ~/.omlx/model_settings.json.local-agent.bak ~/.omlx/model_settings.json
 
 ## 실제 머신에서 남은 작업
 
-- 실제 stable 설치와 16.99GB 모델 다운로드
-- `verify`와 16K-profile `bench` 실행 (실제 안정 prompt는 약 3.3K tokens; 6.5K 이상은 prefill guard가 거부)
+- stable 설치와 16.99GB 모델 다운로드 완료
+- `verify`와 16K-profile `bench` 완료 (실제 안정 prompt는 약 3.3K tokens; 6.5K 이상은 prefill guard가 거부)
 - 24K/32K 측정은 16K profile의 prefill 한계가 해소될 때까지 보류
-- 30~60분 실제 Pi 저장소 작업
+- 30~60분 실제 Pi 저장소 작업은 사용할 저장소와 작업을 정한 뒤 실행
 
 ## 실제 검증 결과 (2026-08-21)
 
