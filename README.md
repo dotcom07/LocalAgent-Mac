@@ -90,4 +90,6 @@ cp ~/.omlx/model_settings.json.local-agent.bak ~/.omlx/model_settings.json
 - `bench` 통과: 3,263 prompt tokens, cold TTFT 중앙값 33.1s, warm 13.6s, warm cached 2,048 tokens, peak oMLX RSS 17.60GB.
 - 측정 중 swap은 6.19GB에서 6.06GB로 증가하지 않았다. 이미 존재하던 swap이므로 장시간 운용 전 다른 메모리 사용 앱을 정리한다.
 - 16K는 API/model context 상한으로 설정했지만, 이 24GB 조합에서 약 6.5K 이상 prefill은 oMLX guard가 거부했다. 따라서 24K/32K 실험과 “16K prompt 안정” 주장은 보류한다.
+- 단일 decode 측정(2,884 prompt / 6 completion tokens)은 prefill 106.75 tok/s, generation 33.12 tok/s, TTFT 27.02s였다. 23-token 재측정은 generation 26.03 tok/s, TTFT 23.72s였다. 짧은 completion이라 속도는 참고값으로만 본다.
+- 두 decode 측정에서 swap이 각각 약 +336MB, +474MB 증가해 추가 반복과 장시간 Pi loop는 보류한다. 서버는 guard 오류 없이 idle로 돌아왔다.
 - Pi 연결은 `./local-agent pi --no-session --tools bash --print ...`로 실제 `./test.sh` 실행, `10 checks passed`, exit 0을 확인했다. 기본 full coding tool schema는 약 20.3GB에서 prefill/memory guard를 넘으므로 24GB에서 안정 프로필로 취급하지 않는다.
