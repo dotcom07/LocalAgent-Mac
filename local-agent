@@ -7,8 +7,8 @@ readonly SCRIPT_DIR=${0:A:h}
 readonly CONFIG_FILE=${LOCAL_AGENT_CONFIG:-$SCRIPT_DIR/local-agent.env}
 readonly OMLX_HOME=$HOME/.omlx
 readonly ENDPOINT=http://127.0.0.1:8000
-readonly MAX_OUTPUT_TOKENS=8192
-readonly HOT_CACHE_SIZE=1GB
+readonly MAX_OUTPUT_TOKENS=1024
+readonly HOT_CACHE_SIZE=256MB
 
 die() {
   print -u2 -- "error: $*"
@@ -37,7 +37,7 @@ require_command() {
 
 load_config() {
   MODEL_ID=fcmeyer/Qwen3.8-27B-MLX-oQ4e-mtp
-  CONTEXT_TOKENS=16384
+  CONTEXT_TOKENS=8192
   MEMORY_LIMIT_GB=20
   REASONING_EFFORT=medium
 
@@ -65,8 +65,8 @@ load_config() {
     *) die "MODEL_ID must be one of the two verified Qwen3.8 oQ4e-MTP checkpoints" ;;
   esac
   case $CONTEXT_TOKENS in
-    16384|24576|32768) ;;
-    *) die "CONTEXT_TOKENS must be 16384, 24576, or 32768" ;;
+    8192|16384|24576|32768) ;;
+    *) die "CONTEXT_TOKENS must be 8192, 16384, 24576, or 32768" ;;
   esac
   [[ $MEMORY_LIMIT_GB == <-> ]] || die "MEMORY_LIMIT_GB must be an integer"
   (( MEMORY_LIMIT_GB >= 18 && MEMORY_LIMIT_GB <= 20 )) ||
@@ -353,7 +353,7 @@ configure_omlx() {
           presence_penalty: 0.0,
           repetition_penalty: 1.0,
           enable_thinking: true,
-          mtp_enabled: true,
+          mtp_enabled: false,
           turboquant_kv_enabled: false,
           vlm_mtp_enabled: false,
           dflash_enabled: false,
@@ -375,7 +375,7 @@ configure_omlx() {
 
   print -- "configured: $MODEL_NAME"
   print -- "context=${CONTEXT_TOKENS}, output=${MAX_OUTPUT_TOKENS}, memory=${MEMORY_LIMIT_GB}GB"
-  print -- "MTP=on, TurboQuant=off, SSD cache=on, hot cache=$HOT_CACHE_SIZE"
+  print -- "MTP=off, TurboQuant=off, SSD cache=on, hot cache=$HOT_CACHE_SIZE"
 }
 
 wait_ready() {

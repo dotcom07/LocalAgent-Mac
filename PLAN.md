@@ -9,9 +9,9 @@ Pi
   -> localhost OpenAI/Anthropic API
 oMLX stable
   -> Qwen3.8-27B MLX oQ4e-MTP
-  -> Lightning MTP ON
+  -> Lightning MTP OFF (measured stable profile)
   -> TurboQuant KV OFF
-  -> context 16,384
+  -> context 8,192
   -> concurrent requests 1
   -> hot RAM + SSD prefix/KV cache
 Apple MLX / Metal
@@ -22,7 +22,7 @@ Apple MLX / Metal
 1. 새 Mac에서 문서 순서대로 설치와 설정을 재현할 수 있다.
 2. 서버는 외부 인터페이스가 아니라 `localhost`에만 노출된다.
 3. `/v1/models`, 일반 생성, thinking 생성, tool call을 순서대로 통과한다.
-4. 16K를 API 상한으로 유지하고, 실제 prefill 안정 범위를 측정해 swap 폭증 없이 단일 에이전트 작업을 완료한다.
+4. 8K를 기본 API 상한으로 유지하고, 실제 prefill/출력 안정 범위를 측정해 swap 폭증 없이 단일 에이전트 작업을 완료한다.
 5. 같은 prefix를 반복했을 때 cache hit 또는 TTFT 개선을 측정 결과로 남긴다.
 6. 실패하면 사용자가 설정을 되돌리거나 oMLX를 중지할 수 있다.
 
@@ -44,7 +44,7 @@ Apple MLX / Metal
 - 웹 UI, 별도 백엔드, Python 패키지, Docker, 데이터베이스를 추가하지 않는다.
 - `mlx-dspark`와 `llama.cpp`를 함께 설치하지 않는다. oMLX 기준선이 측정된 뒤 별도 단계로 비교한다.
 - `iogpu.wired_limit_mb` 같은 시스템 전역 설정은 자동 변경하지 않는다.
-- 24K/32K는 자동 승격하지 않는다. 16K 측정이 통과한 뒤 사용자가 명시적으로 시험한다.
+- 16K 이상은 자동 승격하지 않는다. 8K 안정 프로필이 통과한 뒤 사용자가 명시적으로 시험한다.
 
 ## 3. 책임 경계와 불변식
 
@@ -62,16 +62,16 @@ Homebrew/oMLX            Pi                   macOS 도구
 
 반드시 지킬 불변식:
 
-- `context_tokens` 기본값은 `16384`다.
+- `context_tokens` 기본값은 `8192`다.
 - `max_concurrent_requests`는 `1`이다.
-- `lightning_mtp=true`, `turboquant_kv=false`로 시작한다.
+- `lightning_mtp=false`, `turboquant_kv=false`로 시작한다.
 - MTP와 TurboQuant를 동시에 켜는 코드는 첫 버전에 넣지 않는다.
 - server ready 확인 전 Pi를 시작하지 않는다.
 - 이미 설치된 도구와 사용자 설정을 덮어쓰지 않는다. 변경 전 현재값을 출력하고 백업한다.
 - oMLX 버전이 요구 설정을 지원하지 않으면 조용히 무시하지 않고 실패한다.
 - 모델과 캐시는 Git 저장소 밖의 oMLX 기본 위치에 둔다.
 - 한 번에 하나의 모델만 pin/load한다.
-- benchmark 실패는 설치 실패와 구분하고, 마지막 안정 설정은 16K로 유지한다.
+- benchmark 실패는 설치 실패와 구분하고, 마지막 안정 설정은 8K/MTP OFF로 유지한다.
 
 ## 4. 최종 코드 구조
 
@@ -94,7 +94,7 @@ LocalAgent-Mac/
 
 ```sh
 MODEL_ID=fcmeyer/Qwen3.8-27B-MLX-oQ4e-mtp
-CONTEXT_TOKENS=16384
+CONTEXT_TOKENS=8192
 MEMORY_LIMIT_GB=20
 REASONING_EFFORT=medium
 ```
@@ -115,7 +115,7 @@ host는 `127.0.0.1`로 고정한다. MTP, TurboQuant, concurrency도 안전 불�
 | `doctor` | Apple Silicon, 총 메모리, 여유 디스크, Homebrew, oMLX/Pi 버전과 포트 충돌을 읽기 전용 검사한다. | 현재 Mac / 표 형식 결과 | 검사 중 시스템을 변경하지 않는다. 24GB 미만이면 명확히 중단한다. |
 | `install_tools` | 공식 Homebrew 방식으로 stable oMLX를, 공식 npm 후속 패키지로 Pi를 설치한다. | 사용자 실행 / 설치 결과 | 이미 설치됐으면 건너뛴다. `rc/dev`는 거부하고 curl-pipe-shell을 쓰지 않는다. |
 | `download_model` | oMLX 서버를 띄우고 native Admin downloader를 연다. | `MODEL_ID` / 브라우저 downloader | 별도 downloader를 구현하지 않는다. partial download 처리는 oMLX가 소유한다. |
-| `configure_omlx` | 서버를 중지한 뒤 기존 JSON을 보존하며 16K, 단일 요청, model pin, MTP, cache, memory limit을 원자적으로 적용한다. | 검증된 설정 / oMLX 설정 | 최초 기존 파일을 백업한다. 다른 모델은 설정을 보존하고 pin/default만 해제한다. |
+| `configure_omlx` | 서버를 중지한 뒤 기존 JSON을 보존하며 8K, 단일 요청, model pin, MTP OFF, cache, memory limit을 원자적으로 적용한다. | 검증된 설정 / oMLX 설정 | 최초 기존 파일을 백업한다. 다른 모델은 설정을 보존하고 pin/default만 해제한다. |
 | `start_server` | oMLX의 공식 background service를 시작하고 `wait_ready`를 호출한다. | 설정된 endpoint / ready server | 자체 daemon supervisor를 만들지 않는다. 중복 서버를 띄우지 않는다. |
 | `wait_ready` | 제한 시간 동안 `/health`를 확인한다. | endpoint, timeout / 성공 또는 timeout | 무한 대기하지 않는다. timeout 시 공식 로그 위치를 알려준다. |
 | `stop_server` | oMLX 공식 service stop을 호출한다. | 없음 / stopped | 다른 MLX·Python 프로세스를 이름으로 일괄 종료하지 않는다. |
@@ -187,17 +187,17 @@ main
 
 ### Phase 4 — M4 Pro 24GB 실측과 보정 (Luna)
 
-1. 16K 프로파일에서 cold/warm 각 3회 측정한다. 모델 guard가 허용하는 실제 prompt 길이는 calibration 결과로 기록한다.
+1. 8K 프로파일에서 cold/warm 각 3회 측정한다. 모델 guard가 허용하는 실제 prompt 길이는 calibration 결과로 기록한다.
 2. peak RSS, macOS memory pressure, swap 변화, TTFT, decode tok/s를 기록한다.
 3. 안정적일 때만 24K를 같은 방식으로 측정한다.
 4. 24K도 안정적일 때만 32K를 실험한다.
 5. 30~60분짜리 실제 Pi 저장소 작업 한 건으로 장시간 loop를 확인한다.
 
-검증: 기본값은 가장 빠른 값이 아니라 장시간 작업에서 pressure/swap이 악화되지 않는 값으로 유지한다. 이번 실측에서는 3.3K prompt가 통과했고 약 6.5K 이상은 prefill guard가 거부되어 24K/32K 승격을 보류한다. 단일 decode는 26.03~33.12 tok/s였지만 completion이 6~23 tokens로 짧았고, 두 번 모두 swap이 약 336~474MB 증가했다. 최소 `bash`만 허용한 Pi loop는 `./test.sh`를 실행해 10 checks/exit 0을 확인했지만, 기본 full coding tool schema는 약 20.3GB에서 guard를 넘었다.
+검증: 기본값은 가장 빠른 값이 아니라 장시간 작업에서 pressure/swap이 악화되지 않는 값으로 유지한다. 8K/MTP ON은 6문항에서 swap이 약 1.48GB 증가했고, 8K/MTP OFF는 6문항과 1024-token stress를 abort 없이 통과하며 swap이 안정적이었다. MTP OFF 중앙 total time은 약 17.09s로 ON의 9.65s보다 느리므로 안정성을 우선해 최종 선택했다. 기본 full coding tool schema는 약 20.3GB에서 여전히 guard를 넘는다.
 
 ### Phase 5 — 선택적 backend 비교 (나중)
 
-oMLX 기준선이 남은 뒤에만 별도 branch에서 `mlx-dspark`를 비교한다. 동일 model family, context, prompt, 반복 횟수로 측정하며 16K 장시간 agent loop가 확실히 개선될 때만 교체를 논의한다. `llama.cpp IQ4_XS`는 oMLX 호환 문제가 실제로 발생했을 때 복구 문서만 추가한다.
+oMLX 기준선이 남은 뒤에만 별도 branch에서 `mlx-dspark`를 비교한다. 동일 model family, context, prompt, 반복 횟수로 측정하며 8K 장시간 agent loop가 확실히 개선될 때만 교체를 논의한다. `llama.cpp IQ4_XS`는 oMLX 호환 문제가 실제로 발생했을 때 복구 문서만 추가한다.
 
 ## 7. Sol → Luna 작업 경계
 
@@ -215,7 +215,7 @@ Luna에게 넘길 일:
 - 설치/다운로드처럼 시간이 긴 실행
 - `test.sh`와 smoke test 반복
 - cold/warm benchmark 반복과 결과 정리
-- 16K → 24K → 32K 순차 검증
+- 8K 안정 프로필 검증 및 필요 시 16K 이상 순차 검증
 - 실제 Pi 작업 장시간 실행
 - 이미 정한 함수 경계 안의 작은 호환성 수정
 

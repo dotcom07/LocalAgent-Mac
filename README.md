@@ -35,7 +35,7 @@ cp local-agent.env.example local-agent.env
 ./local-agent pi
 ```
 
-`verify`는 text, thinking, required tool call, 반복 prefix cache hit를 확인한다. `bench`는 설정된 context의 약 20% 길이에서 cold 3회와 warm 3회를 측정한다. 현재 모델 RSS와 prefill guard 변동을 감안해 verify에서 통과한 범위로 고정한 값이며, context 상한 자체는 설정값(기본 16K)으로 유지된다. 결과는 `results/<timestamp>-<mode>/summary.json`에 저장되며 prompt 원문은 저장하지 않는다.
+`verify`는 text, thinking, required tool call, 반복 prefix cache hit를 확인한다. `bench`는 설정된 context의 약 20% 길이에서 cold 3회와 warm 3회를 측정한다. 현재 모델 RSS와 prefill guard 변동을 감안해 안정 프로필을 8K로 고정했으며, 결과는 `results/<timestamp>-<mode>/summary.json`에 저장된다.
 
 Admin 최초 진입 시 설정한 API key는 `~/.omlx/settings.json`에만 남는다. 래퍼는 필요한 API 호출에 이 값을 자동 사용하며 화면이나 결과 파일에는 출력하지 않는다.
 
@@ -48,13 +48,13 @@ Pi 인자는 그대로 전달된다.
 ## 고정된 안전값
 
 - bind: `127.0.0.1:8000`
-- context: 16K 기본, 명시적으로만 24K/32K
-- output: 8K
+- context: 8K 기본, 16K 이상은 실험용
+- output: 1K
 - process memory ceiling: 20GB (19GB rejected this model's 16K prefill; 20GB is the measured ceiling that still leaves macOS headroom)
 - concurrent requests: 1
-- Lightning MTP: ON
+- Lightning MTP: OFF (8K 안정 프로필)
 - TurboQuant, DFlash, ANE prefill: OFF
-- SSD prefix cache: ON, hot cache: 1GB
+- SSD prefix cache: ON, hot cache: 256MB
 - thinking: ON, reasoning effort: medium
 - sampling: temperature 1.0, top-p 0.95, top-k 20
 
@@ -79,8 +79,8 @@ cp ~/.omlx/model_settings.json.local-agent.bak ~/.omlx/model_settings.json
 ## 실제 머신에서 남은 작업
 
 - stable 설치와 16.99GB 모델 다운로드 완료
-- `verify`와 16K-profile `bench` 완료 (실제 안정 prompt는 약 3.3K tokens; 6.5K 이상은 prefill guard가 거부)
-- 24K/32K 측정은 16K profile의 prefill 한계가 해소될 때까지 보류
+- 기존 16K/MTP ON benchmark 완료 (실제 안정 prompt는 약 3.3K tokens; 6.5K 이상은 prefill guard가 거부)
+- 8K/MTP ON과 8K/MTP OFF를 동일 6문항으로 순차 비교했고, 안정 프로필은 MTP OFF로 선택
 - 30~60분 실제 Pi 저장소 작업은 사용할 저장소와 작업을 정한 뒤 실행
 
 ## 실제 검증 결과 (2026-08-21)
@@ -93,3 +93,5 @@ cp ~/.omlx/model_settings.json.local-agent.bak ~/.omlx/model_settings.json
 - 단일 decode 측정(2,884 prompt / 6 completion tokens)은 prefill 106.75 tok/s, generation 33.12 tok/s, TTFT 27.02s였다. 23-token 재측정은 generation 26.03 tok/s, TTFT 23.72s였다. 짧은 completion이라 속도는 참고값으로만 본다.
 - 두 decode 측정에서 swap이 각각 약 +336MB, +474MB 증가해 추가 반복과 장시간 Pi loop는 보류한다. 서버는 guard 오류 없이 idle로 돌아왔다.
 - Pi 연결은 `./local-agent pi --no-session --tools bash --print ...`로 실제 `./test.sh` 실행, `10 checks passed`, exit 0을 확인했다. 기본 full coding tool schema는 약 20.3GB에서 prefill/memory guard를 넘으므로 24GB에서 안정 프로필로 취급하지 않는다.
+- 안정화 A/B: `8K + hot256MB + MTP ON`은 6/6 요청을 끝냈지만 swap이 약 +1.48GB였고, `8K + hot256MB + MTP OFF`는 6/6 `stop`, swap 증가 없음이었다. MTP OFF의 중앙 total time은 약 17.09s로 MTP ON의 9.65s보다 약 77% 느렸다.
+- MTP OFF에서 `max_tokens=1024` 긴 출력도 75.15s, RSS +0.06GB, OOM/abort 없이 완료했다.

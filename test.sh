@@ -30,7 +30,7 @@ expect_fail() {
 valid=$TEST_DIR/valid.env
 printf '%s\n' \
   'MODEL_ID=fcmeyer/Qwen3.8-27B-MLX-oQ4e-mtp' \
-  'CONTEXT_TOKENS=16384' \
+  'CONTEXT_TOKENS=8192' \
   'MEMORY_LIMIT_GB=19' \
   'REASONING_EFFORT=medium' > "$valid"
 expect_ok "$valid"
@@ -93,9 +93,9 @@ jq -e '
   .models.other.temperature == 0.7
   and .models.other.is_pinned == false
   and .models.other.is_default == false
-  and .models["Qwen3.8-27B-MLX-oQ4e-mtp"].mtp_enabled == true
+  and .models["Qwen3.8-27B-MLX-oQ4e-mtp"].mtp_enabled == false
   and .models["Qwen3.8-27B-MLX-oQ4e-mtp"].turboquant_kv_enabled == false
-  and .models["Qwen3.8-27B-MLX-oQ4e-mtp"].max_context_window == 16384
+  and .models["Qwen3.8-27B-MLX-oQ4e-mtp"].max_context_window == 8192
   and .models["Qwen3.8-27B-MLX-oQ4e-mtp"].chat_template_kwargs.reasoning_effort == "medium"
 ' "$fake_home/.omlx/model_settings.json" >/dev/null
 [[ -f $fake_home/.omlx/settings.json.local-agent.bak ]]

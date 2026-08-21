@@ -10,7 +10,7 @@ function usage(message) {
 }
 
 function args(argv) {
-  const out = { endpoint: DEFAULT_ENDPOINT, maxTokens: 256, timeoutMs: DEFAULT_TIMEOUT_MS, context: 16384, reasoningEffort: 'medium' };
+  const out = { endpoint: DEFAULT_ENDPOINT, maxTokens: 256, timeoutMs: DEFAULT_TIMEOUT_MS, context: 8192, reasoningEffort: 'medium' };
   const value = (index, name) => {
     if (index + 1 >= argv.length || argv[index + 1].startsWith('--')) usage(`${name} requires a value`);
     return argv[index + 1];
@@ -41,7 +41,7 @@ function args(argv) {
   if (single && (out.prompt == null) === (out.promptFile == null)) usage('provide exactly one of --prompt or --prompt-file');
   if (!Number.isInteger(out.maxTokens) || out.maxTokens < 1) usage('--max-tokens must be a positive integer');
   if (!Number.isInteger(out.timeoutMs) || out.timeoutMs < 1) usage('--timeout-ms must be a positive integer');
-  if (![16384, 24576, 32768].includes(out.context)) usage('--context must be 16384, 24576, or 32768');
+  if (![8192, 16384, 24576, 32768].includes(out.context)) usage('--context must be 8192, 16384, 24576, or 32768');
   if (!['low', 'medium', 'xhigh'].includes(out.reasoningEffort)) usage('--reasoning-effort must be low, medium, or xhigh');
   return out;
 }
