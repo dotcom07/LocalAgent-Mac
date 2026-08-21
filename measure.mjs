@@ -246,8 +246,8 @@ async function memorySnapshot() {
 }
 
 async function bench(options) {
-  // Keep benchmark prompts below the 24GB-safe prefill guard; agent compaction
-  // should leave the same headroom during a real session.
+  // ponytail: fixed 20% benchmark ceiling; raise after a smaller quant or
+  // larger measured memory guard makes longer prompts safe.
   const target = Math.floor(options.context * 0.20);
   const block = 'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu.\n';
   let repeats = Math.floor(target / 16);
