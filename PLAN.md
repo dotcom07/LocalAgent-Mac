@@ -193,7 +193,7 @@ main
 4. 24K도 안정적일 때만 32K를 실험한다.
 5. 30~60분짜리 실제 Pi 저장소 작업 한 건으로 장시간 loop를 확인한다.
 
-검증: 기본값은 가장 빠른 값이 아니라 장시간 작업에서 pressure/swap이 악화되지 않는 값으로 유지한다. 이번 실측에서는 3.3K prompt가 통과했고 약 6.5K 이상은 prefill guard가 거부되어 24K/32K 승격을 보류한다.
+검증: 기본값은 가장 빠른 값이 아니라 장시간 작업에서 pressure/swap이 악화되지 않는 값으로 유지한다. 이번 실측에서는 3.3K prompt가 통과했고 약 6.5K 이상은 prefill guard가 거부되어 24K/32K 승격을 보류한다. 최소 `bash`만 허용한 Pi loop는 `./test.sh`를 실행해 10 checks/exit 0을 확인했지만, 기본 full coding tool schema는 약 20.3GB에서 guard를 넘었다.
 
 ### Phase 5 — 선택적 backend 비교 (나중)
 

@@ -478,11 +478,30 @@ run_measure() {
   (( exit_code == 0 )) || die "$mode failed"
 }
 
+pi_provider_ready() {
+  local pi_dir=${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}
+  [[ -f $pi_dir/models.json ]] || return 1
+  jq -e --arg model "$MODEL_NAME" --arg base "$ENDPOINT/v1" '
+    .providers.omlx.baseUrl == $base
+    and any(.providers.omlx.models[]?; .id == $model)
+  ' "$pi_dir/models.json" >/dev/null 2>&1
+}
+
 launch_pi() {
   require_command omlx
   require_command pi
+  require_command jq
   require_model_ready
-  exec omlx launch pi --model "$MODEL_NAME" -- "$@"
+  if (( $# == 0 )); then
+    exec omlx launch pi --model "$MODEL_NAME"
+  fi
+  if ! pi_provider_ready; then
+    # oMLX 0.6.2 writes Pi's provider config but forwards a literal `--` for
+    # extra arguments, so configure through its harmless help path first.
+    omlx launch pi --model "$MODEL_NAME" -- --help >/dev/null 2>&1 ||
+      die "could not configure Pi for oMLX"
+  fi
+  exec pi --model "omlx/$MODEL_NAME" "$@"
 }
 
 stop_server() {
