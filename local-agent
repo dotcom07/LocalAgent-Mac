@@ -489,6 +489,7 @@ pi_provider_ready() {
 }
 
 launch_pi() {
+  node_is_supported || die "Pi requires Node >=22.19 with zstd support; run: source ~/.nvm/nvm.sh && nvm use 22.19.0"
   require_command omlx
   require_command pi
   require_command jq
