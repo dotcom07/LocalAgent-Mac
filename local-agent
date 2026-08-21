@@ -116,7 +116,8 @@ node_is_supported() {
   major=${version%%.*}
   rest=${version#*.}
   minor=${rest%%.*}
-  (( major > 22 || (major == 22 && minor >= 19) ))
+  (( major > 22 || (major == 22 && minor >= 19) )) || return 1
+  node -p 'typeof require("node:zlib").createZstdDecompress === "function"' 2>/dev/null | grep -qx true
 }
 
 server_is_ready() {
@@ -191,7 +192,7 @@ doctor() {
   if node_is_supported; then
     print -- "[ok] Node $(node --version)"
   elif command -v node >/dev/null 2>&1; then
-    print -- "[warn] Node $(node --version); Pi requires >=22.19"
+    print -- "[warn] Node $(node --version); Pi requires >=22.19 with zstd support"
   else
     print -- "[info] Node will be installed by ./local-agent install"
   fi
@@ -236,7 +237,7 @@ install_tools() {
   if ! command -v node >/dev/null 2>&1; then
     brew install node
   fi
-  node_is_supported || die "Pi requires Node >=22.19"
+  node_is_supported || die "Pi requires Node >=22.19 with zstd support"
   require_command npm
 
   if ! command -v omlx >/dev/null 2>&1; then
@@ -449,7 +450,7 @@ require_model_ready() {
 
 run_measure() {
   local mode=$1
-  node_is_supported || die "Node >=22.19 is required"
+  node_is_supported || die "Node >=22.19 with zstd support is required"
   require_model_ready
 
   mkdir -p "$SCRIPT_DIR/results"
