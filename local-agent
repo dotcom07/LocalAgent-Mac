@@ -252,7 +252,7 @@ install_tools() {
   fi
   require_stable_omlx
 
-  if ! command -v pi >/dev/null 2>&1; then
+  if [[ ! -x $(npm prefix -g)/bin/pi ]]; then
     npm install -g @earendil-works/pi-coding-agent
   fi
 
